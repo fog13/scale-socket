@@ -1,10 +1,10 @@
-package com.scaars.socket;
+package com.chatapp.gateway;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class SocketApplicationTests {
+class WebSocketGatewayApplicationTests {
 
     @Test
     void contextLoads() {

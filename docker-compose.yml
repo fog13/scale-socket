@@ -3,95 +3,123 @@ version: '3.8'
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.2
-    container_name: socket_zookeeper # Added prefix
+    container_name: socket_zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    networks: # Use explicit network
+      - socket_network
 
   kafka:
     image: confluentinc/cp-kafka:7.3.2
-    container_name: socket_kafka # Added prefix
+    container_name: socket_kafka
     depends_on:
-      - zookeeper # Service name reference remains 'zookeeper'
+      - zookeeper # Simple dependency ok here
     ports:
       - "9092:9092"
       - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 # Connect to Zookeeper using its service name
-      # --- Listener Configuration ---
-      # Define listener names and protocols map
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      # Define listeners the broker should bind to (inside the container)
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
-      # Define how clients connect from different networks
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
-      # Specify the listener for inter-broker communication
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      # --- Other Settings ---
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks: # Use explicit network
+      - socket_network
 
   redis:
     image: redis:7-alpine
-    container_name: socket_redis # Added prefix
+    container_name: socket_redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks: # Use explicit network
+      - socket_network
 
   scylladb:
     image: scylladb/scylla:5.2
-    container_name: socket_scylladb # Added prefix
+    container_name: socket_scylladb
     ports:
       - "9042:9042"
     volumes:
       - scylla_data:/var/lib/scylla
     command: --smp 1 --memory 1G --developer-mode 1 --experimental 1
+    networks: # Use explicit network
+      - socket_network
+    # --- HEALTHCHECK ADDED ---
+    healthcheck:
+      # Checks if nodetool status reports the node as Up/Normal (UN)
+      # Use CMD-SHELL to allow pipes and grep
+      test: ["CMD-SHELL", "nodetool status | grep -q 'UN ' || exit 1"]
+      interval: 70s       # Check every 15 seconds
+      timeout: 10s        # Allow check up to 10 seconds to run
+      retries: 5          # Allow 5 retries after start_period before marking unhealthy
+      start_period: 10s   # Crucial: Wait 70 seconds after start before first failure counts
+      # This provides the ~1 minute delay you requested. Adjust if needed.
+    # --- END OF HEALTHCHECK ---
 
   websocket-gateway:
     build:
       context: .
       dockerfile: ./websocket-gateway-service/Dockerfile
-    container_name: socket_websocket_gateway # Added prefix
-    depends_on:
+    container_name: socket_websocket_gateway
+    depends_on: # Simple dependencies ok here
       - kafka
       - redis
     ports:
       - "8080:8080"
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      # Connection strings still use simple service names
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SPRING_REDIS_HOST: redis
       NODE_ID: gateway-docker-1
       PRESENCE_TTL_SECONDS: 60
+    networks: # Use explicit network
+      - socket_network
 
   message-processor:
     build:
       context: .
       dockerfile: ./message-processor-service/Dockerfile
-    container_name: socket_message_processor # Added prefix
+    container_name: socket_message_processor
+    # --- DEPENDS_ON MODIFIED ---
     depends_on:
-      - kafka
-      - redis
-      - scylladb
+      # Use map format to specify conditions
+      kafka:
+        condition: service_started # Default, Kafka starts relatively quickly
+      redis:
+        condition: service_started # Default, Redis starts very quickly
+      scylladb:
+        condition: service_healthy # Waits for the scylladb healthcheck above to pass
+    # --- END OF DEPENDS_ON MODIFICATION ---
     ports:
       - "8081:8080"
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      # Connection strings still use simple service names
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SPRING_REDIS_HOST: redis
-      SPRING_DATA_CASSANDRA_CONTACT_POINTS: scylladb
+      SPRING_DATA_CASSANDRA_CONTACT_POINTS: socket_scylladb # Use service name
+      SPRING_DATA_CASSANDRA_PORT: 9042
       SPRING_DATA_CASSANDRA_LOCAL_DATACENTER: datacenter1
       SPRING_DATA_CASSANDRA_KEYSPACE_NAME: chat_app
+    networks: # Use explicit network
+      - socket_network
 
+# Define named volumes
 volumes:
   redis_data:
   scylla_data:
+#
+## Define the network
+networks:
+  socket_network:
+    driver: bridge
