@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.2
+    container_name: socket_zookeeper # Added prefix
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.2
+    container_name: socket_kafka # Added prefix
+    depends_on:
+      - zookeeper # Service name reference remains 'zookeeper'
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 # Connect to Zookeeper using its service name
+      # --- Listener Configuration ---
+      # Define listener names and protocols map
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      # Define listeners the broker should bind to (inside the container)
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      # Define how clients connect from different networks
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      # Specify the listener for inter-broker communication
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # --- Other Settings ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+
+  redis:
+    image: redis:7-alpine
+    container_name: socket_redis # Added prefix
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  scylladb:
+    image: scylladb/scylla:5.2
+    container_name: socket_scylladb # Added prefix
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylla_data:/var/lib/scylla
+    command: --smp 1 --memory 1G --developer-mode 1 --experimental 1
+
+  websocket-gateway:
+    build:
+      context: .
+      dockerfile: ./websocket-gateway-service/Dockerfile
+    container_name: socket_websocket_gateway # Added prefix
+    depends_on:
+      - kafka
+      - redis
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Connection strings still use simple service names
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_REDIS_HOST: redis
+      NODE_ID: gateway-docker-1
+      PRESENCE_TTL_SECONDS: 60
+
+  message-processor:
+    build:
+      context: .
+      dockerfile: ./message-processor-service/Dockerfile
+    container_name: socket_message_processor # Added prefix
+    depends_on:
+      - kafka
+      - redis
+      - scylladb
+    ports:
+      - "8081:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Connection strings still use simple service names
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_REDIS_HOST: redis
+      SPRING_DATA_CASSANDRA_CONTACT_POINTS: scylladb
+      SPRING_DATA_CASSANDRA_LOCAL_DATACENTER: datacenter1
+      SPRING_DATA_CASSANDRA_KEYSPACE_NAME: chat_app
+
+volumes:
+  redis_data:
+  scylla_data:
